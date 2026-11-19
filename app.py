@@ -348,12 +348,45 @@ def penjelasan_kata_berpengaruh(top_fitur):
 
 
 def penjelasan_preprocessing(raw, df):
-    sebelum = df["content"].astype(str).str.split().str.len().mean()
-    sesudah = df["text_clean"].str.split().str.len().mean()
+    if raw is None or len(raw) == 0:
+        return "Belum ada data mentah yang dapat diringkas."
+
+    if len(df) == 0:
+        return (
+            f"**Ringkasan pada data aktif ({len(raw):,} baris mentah):** seluruh ulasan "
+            f"(**{len(raw):,} baris**) menjadi kosong setelah preprocessing. Coba periksa kolom "
+            "`content` atau sesuaikan aturan pembersihan."
+        )
+
+    sebelum = raw["content"].fillna("").astype(str).str.split().str.len().mean()
+    sesudah = df["text_clean"].fillna("").astype(str).str.split().str.len().mean()
     dibuang = len(raw) - len(df)
-    return (f"**Ringkasan pada data Anda:** rata-rata ulasan awalnya **{sebelum:.1f} kata**, setelah dibersihkan "
-            f"menjadi **{sesudah:.1f} kata** (berkurang {max(0, 1 - sesudah / sebelum):.0%}). "
-            f"Sebanyak **{dibuang:,} ulasan** dibuang karena kosong setelah pembersihan.")
+    pct_dibuang = (dibuang / len(raw)) * 100
+
+    if sebelum > 0:
+        perubahan = ((sesudah - sebelum) / sebelum) * 100
+        if perubahan < 0:
+            info_panjang = f"berkurang **{abs(perubahan):.0f}%**"
+        elif perubahan > 0:
+            info_panjang = f"bertambah **{perubahan:.0f}%**"
+        else:
+            info_panjang = "tidak berubah (**0%**)"
+    else:
+        info_panjang = "tidak dapat dihitung"
+
+    catatan_kecil = ""
+    if len(df) < 300:
+        catatan_kecil = (
+            f" Karena data aktif hanya **{len(df):,} ulasan**, perubahan persentase dan "
+            "jumlah baris terbuang akan lebih sensitif terhadap tiap ulasan."
+        )
+
+    return (
+        f"**Ringkasan pada data aktif ({len(df):,} ulasan valid dari {len(raw):,} baris mentah):** "
+        f"rata-rata panjang ulasan awalnya **{sebelum:.1f} kata**, lalu setelah dibersihkan "
+        f"menjadi **{sesudah:.1f} kata** ({info_panjang}). Sebanyak **{dibuang:,} ulasan** "
+        f"(**{pct_dibuang:.1f}%** dari data mentah) dibuang karena kosong setelah pembersihan.{catatan_kecil}"
+    )
 
 
 # ======================================================================
