@@ -9,7 +9,7 @@ import seaborn as sns
 import streamlit as st
 from wordcloud import WordCloud
 
-from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
+from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.model_selection import StratifiedShuffleSplit
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.metrics import (accuracy_score, precision_score, recall_score,
@@ -140,7 +140,7 @@ PENJELASAN_TAHAP = pd.DataFrame({
 
 
 # ======================================================================
-# DATA & MODEL
+# DATA & MODEL (CountVectorizer + Multinomial Naive Bayes)
 # ======================================================================
 @st.cache_data(show_spinner="Preprocessing teks...")
 def load_and_clean(raw: pd.DataFrame):
@@ -165,17 +165,17 @@ def train_model(df, test_size, alpha, min_df, ngram_max, balance):
     else:
         train_fit = train_df
 
-    # Fit TF-IDF pada data training asli (sebelum oversampling) agar bobot tidak bias
-    tfidf = TfidfVectorizer(ngram_range=(1, ngram_max), min_df=min_df, sublinear_tf=True)
-    tfidf.fit(train_df["text_clean"])
+    # Fit CountVectorizer pada data training asli sebelum oversampling
+    vec_model = CountVectorizer(ngram_range=(1, ngram_max), min_df=min_df)
+    vec_model.fit(train_df["text_clean"])
 
-    X_fit = tfidf.transform(train_fit["text_clean"])
-    X_train = tfidf.transform(train_df["text_clean"])
-    X_test = tfidf.transform(test_df["text_clean"])
+    X_fit = vec_model.transform(train_fit["text_clean"])
+    X_train = vec_model.transform(train_df["text_clean"])
+    X_test = vec_model.transform(test_df["text_clean"])
 
     nb = MultinomialNB(alpha=alpha).fit(X_fit, train_fit["sentimen"])
     return dict(train_df=train_df, test_df=test_df, train_fit=train_fit,
-                tfidf=tfidf, nb=nb,
+                vectorizer=vec_model, nb=nb,
                 pred_train=nb.predict(X_train), pred_test=nb.predict(X_test))
 
 
@@ -381,11 +381,11 @@ st.sidebar.markdown("**🧠 Parameter model**")
 test_size = st.sidebar.slider("Ukuran data testing", 0.1, 0.4, 0.2, 0.05,
                               help="Porsi ulasan yang disimpan untuk menguji model. 0.2 berarti 20% untuk uji, 80% untuk belajar.")
 alpha = st.sidebar.slider("Alpha (Naive Bayes)", 0.1, 2.0, 0.5, 0.1,
-                          help="Pengaturan 'kehalusan' model agar tidak kaku pada kata yang jarang muncul.")
-ngram_max = st.sidebar.selectbox("N-gram maksimum", [1, 2, 3], index=1,
-                                 help="1 = kata tunggal, 2 = kata tunggal + pasangan 2 kata, dst.")
-min_df = st.sidebar.slider("min_df TF-IDF", 1, 5, 2,
-                           help="Kata harus muncul minimal di sekian ulasan agar dipakai model.")
+                          help="Pengaturan 'kehalusan' (Laplace smoothing) model agar tidak nol pada kata yang jarang muncul.")
+ngram_max = st.sidebar.selectbox("N-gram maksimum", [1, 2, 3], index=0,
+                                 help="1 = kata tunggal (unigram murni), 2 = unigram + bigram, 3 = sampai trigram.")
+min_df = st.sidebar.slider("min_df frekuensi kata", 1, 5, 2,
+                           help="Kata/n-gram harus muncul minimal di sekian ulasan agar dipakai model.")
 balance = st.sidebar.checkbox("Balancing (oversampling) data training", value=True,
                               help="Menyamakan jumlah ulasan tiap sentimen pada data latih agar model tidak berat sebelah.")
 
@@ -393,7 +393,7 @@ balance = st.sidebar.checkbox("Balancing (oversampling) data training", value=Tr
 # HEADER
 # ======================================================================
 st.title("🎮 Klasifikasi Sentimen Ulasan Roblox")
-st.caption("TF-IDF + Multinomial Naive Bayes · pelabelan leksikon per kategori")
+st.caption("CountVectorizer + Multinomial Naive Bayes · pelabelan leksikon per kategori")
 
 if raw is None:
     st.info("Upload file `roblox_ulasan_dominan.csv` di sidebar untuk memulai "
@@ -414,7 +414,7 @@ if df["sentimen"].nunique() < 2:
 
 m = train_model(df, test_size, alpha, min_df, ngram_max, balance)
 train_df, test_df = m["train_df"], m["test_df"]
-tfidf, nb = m["tfidf"], m["nb"]
+vectorizer, nb = m["vectorizer"], m["nb"]
 
 tabs = st.tabs(["📄 Data", "🧹 Preprocessing", "☁️ Word Cloud", "📊 Evaluasi",
                 "🔮 Prediksi", "💬 Kalimat Sering", "💼 Nilai Bisnis"])
@@ -424,7 +424,7 @@ with tabs[0]:
     c1, c2, c3 = st.columns(3)
     c1.metric("Baris data mentah", len(raw))
     c2.metric("Setelah buang teks kosong", len(df))
-    c3.metric("Jumlah fitur TF-IDF", len(tfidf.get_feature_names_out()))
+    c3.metric("Jumlah fitur kata/n-gram", len(vectorizer.get_feature_names_out()))
 
     st.subheader("Distribusi sentimen")
     col_a, col_b = st.columns(2)
@@ -536,7 +536,7 @@ with tabs[3]:
             "yang berhasil ditebak benar.")
 
     st.subheader("Kata paling berpengaruh per kelas (Naive Bayes)")
-    fitur = np.array(tfidf.get_feature_names_out())
+    fitur = np.array(vectorizer.get_feature_names_out())
     top_fitur = {k: fitur[np.argsort(nb.feature_log_prob_[i])[::-1][:12]]
                  for i, k in enumerate(nb.classes_)}
     st.dataframe(pd.DataFrame(top_fitur).rename_axis("Peringkat").rename(index=lambda i: i + 1),
@@ -553,7 +553,7 @@ with tabs[4]:
         if not bersih:
             st.warning("Teks kosong setelah preprocessing. Coba kalimat lain.")
         else:
-            vec = tfidf.transform([bersih])
+            vec = vectorizer.transform([bersih])
             proba = nb.predict_proba(vec)[0]
             pred = nb.classes_[proba.argmax()]
             warna = {"positif": "success", "negatif": "error", "netral": "warning"}[pred]
@@ -569,22 +569,21 @@ with tabs[4]:
             plt.tight_layout()
             st.pyplot(fig)
 
-            # Rincian token yang masuk ke kosakata TF-IDF dan skor per kelas
             nz_idx = vec.nonzero()[1]
-            fitur_all = tfidf.get_feature_names_out()
+            fitur_all = vectorizer.get_feature_names_out()
             if len(nz_idx) > 0:
-                st.markdown("**Rincian fitur aktif dalam kalimat ini**")
+                st.markdown("**Rincian frekuensi kata & kontribusi skor per kelas**")
                 baris_fitur = []
                 for idx in nz_idx:
                     w = fitur_all[idx]
-                    w_tfidf = vec[0, idx]
-                    row = {"Fitur": w, "Bobot TF-IDF": round(float(w_tfidf), 3)}
+                    cnt = int(vec[0, idx])
+                    row = {"Fitur": w, "Frekuensi (Count)": cnt}
                     for c_i, kelas in enumerate(nb.classes_):
-                        row[f"Skor {kelas}"] = round(float(w_tfidf * nb.feature_log_prob_[c_i, idx]), 3)
+                        row[f"Skor {kelas}"] = round(float(cnt * nb.feature_log_prob_[c_i, idx]), 3)
                     baris_fitur.append(row)
                 st.dataframe(pd.DataFrame(baris_fitur), use_container_width=True)
             else:
-                st.caption("Tidak ada kata/frasa pada teks ini yang masuk ke kosakata TF-IDF (coba turunkan `min_df` di sidebar).")
+                st.caption("Tidak ada kata pada teks ini yang masuk ke kosakata model (coba turunkan `min_df` di sidebar).")
 
     st.markdown("---")
     st.subheader("Prediksi massal (CSV)")
@@ -595,7 +594,7 @@ with tabs[4]:
             st.error("Kolom `content` tidak ditemukan.")
         else:
             bdf["text_clean"] = bdf["content"].apply(preprocess)
-            bdf["prediksi"] = nb.predict(tfidf.transform(bdf["text_clean"]))
+            bdf["prediksi"] = nb.predict(vectorizer.transform(bdf["text_clean"]))
             st.dataframe(bdf, use_container_width=True)
             st.download_button("Unduh hasil", bdf.to_csv(index=False).encode("utf-8"),
                                "hasil_prediksi.csv", "text/csv")
