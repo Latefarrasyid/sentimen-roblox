@@ -56,6 +56,12 @@ LABELS = ["negatif", "netral", "positif"]
 PALET = {"negatif": "#d9534f", "netral": "#f0ad4e", "positif": "#5cb85c"}
 DEFAULT_CSV = "roblox_ulasan_dominan.csv"
 
+# Kata penanda kontras: ulasan yang memuat kata ini kemungkinan bersentimen campuran
+KATA_KONTRAS = {"tapi", "tetapi", "namun", "sayang", "sayangnya", "cuma", "hanya", "padahal", "walau",
+                "walaupun", "meski", "meskipun", "sedangkan"}
+AMBANG_YAKIN = 0.50      # probabilitas tertinggi minimal agar dianggap yakin
+AMBANG_SELISIH = 0.10    # selisih dua probabilitas teratas minimal agar dianggap yakin
+
 # ======================================================================
 # PREPROCESSING (sama dengan notebook)
 # ======================================================================
@@ -228,6 +234,22 @@ def kata_dominan(df, sentimen, top=7):
         c = Counter(w for t in g["text_clean"] for w in t.split() if w not in NEGASI)
         baris[kat] = ", ".join(f"{w} ({n})" for w, n in c.most_common(top))
     return pd.DataFrame({"Kata dominan (jumlah)": baris}).rename_axis("Kategori")
+
+
+def kontribusi_kata(vec, tfidf, nb):
+    """Tabel kontribusi tiap kata terhadap tiap kelas.
+
+    Nilai = bobot TF-IDF kata x log-probabilitas kata pada kelas tersebut.
+    Semakin tinggi (kurang negatif) berarti kata itu semakin 'menarik' ke kelas tsb.
+    """
+    fitur = np.array(tfidf.get_feature_names_out())
+    idx = vec.nonzero()[1]
+    bobot = np.asarray(vec[0, idx].todense()).ravel()
+    data = {k: bobot * nb.feature_log_prob_[i][idx] for i, k in enumerate(nb.classes_)}
+    tabel = pd.DataFrame(data, index=fitur[idx])
+    if {"positif", "negatif"}.issubset(tabel.columns):
+        tabel["condong"] = np.where(tabel["positif"] > tabel["negatif"], "positif", "negatif")
+    return tabel
 
 
 # ======================================================================
@@ -555,9 +577,27 @@ with tabs[4]:
         else:
             vec = tfidf.transform([bersih])
             proba = nb.predict_proba(vec)[0]
-            pred = nb.classes_[proba.argmax()]
+            urut = np.argsort(proba)[::-1]
+            pred = nb.classes_[urut[0]]
+            selisih = proba[urut[0]] - proba[urut[1]] if len(urut) > 1 else 1.0
+            ragu = proba.max() < AMBANG_YAKIN or selisih < AMBANG_SELISIH
+            ada_kontras = bool(KATA_KONTRAS & set(str(teks).lower().split()))
+
             warna = {"positif": "success", "negatif": "error", "netral": "warning"}[pred]
             getattr(st, warna)(f"Prediksi: **{pred.upper()}** ({proba.max():.1%})")
+
+            if ragu or ada_kontras:
+                alasan = []
+                if ragu:
+                    alasan.append(f"selisih dua kelas teratas hanya {selisih:.1%}"
+                                  if selisih < AMBANG_SELISIH
+                                  else f"probabilitas tertinggi hanya {proba.max():.1%}")
+                if ada_kontras:
+                    alasan.append("ada kata kontras (mis. 'tapi', 'namun') yang menandakan opini campuran")
+                st.warning("⚠️ **Ulasan kemungkinan bersentimen campuran / model kurang yakin**: "
+                           + "; ".join(alasan) + ". Model berbasis bag-of-words tidak memahami "
+                           "makna kontras, hanya menjumlahkan bukti dari tiap kata.")
+
             st.write("Teks setelah preprocessing:", f"`{bersih}`")
             pdf = pd.DataFrame({"Kelas": nb.classes_, "Probabilitas": proba})
             fig, ax = plt.subplots(figsize=(6, 2.5))
@@ -569,6 +609,21 @@ with tabs[4]:
             plt.tight_layout()
             st.pyplot(fig)
 
+            with st.expander("🔍 Kenapa hasilnya begini? (kontribusi tiap kata)"):
+                kontrib = kontribusi_kata(vec, tfidf, nb)
+                if kontrib.empty:
+                    st.write("Tidak ada kata yang dikenali model (semua kata di luar kosakata).")
+                else:
+                    st.caption("Nilai = bobot TF-IDF × log-probabilitas kata pada kelas. "
+                               "Semakin tinggi (kurang negatif) di suatu kolom, semakin kuat kata itu "
+                               "menarik prediksi ke kelas tersebut. Kolom 'condong' menunjukkan "
+                               "positif atau negatif yang lebih kuat untuk kata tsb.")
+                    st.dataframe(kontrib.round(3), use_container_width=True)
+                    if "condong" in kontrib.columns:
+                        hitung_c = kontrib["condong"].value_counts()
+                        st.write("Jumlah kata yang condong: " +
+                                 ", ".join(f"**{k}**: {v}" for k, v in hitung_c.items()))
+
     st.markdown("---")
     st.subheader("Prediksi massal (CSV)")
     batch = st.file_uploader("CSV dengan kolom `content`", type="csv", key="batch")
@@ -578,7 +633,10 @@ with tabs[4]:
             st.error("Kolom `content` tidak ditemukan.")
         else:
             bdf["text_clean"] = bdf["content"].apply(preprocess)
-            bdf["prediksi"] = nb.predict(tfidf.transform(bdf["text_clean"]))
+            proba_b = nb.predict_proba(tfidf.transform(bdf["text_clean"]))
+            bdf["prediksi"] = nb.classes_[proba_b.argmax(axis=1)]
+            bdf["keyakinan"] = proba_b.max(axis=1).round(4)
+            bdf["ragu"] = bdf["keyakinan"] < AMBANG_YAKIN
             st.dataframe(bdf, use_container_width=True)
             st.download_button("Unduh hasil", bdf.to_csv(index=False).encode("utf-8"),
                                "hasil_prediksi.csv", "text/csv")
