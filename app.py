@@ -78,6 +78,19 @@ def stem_word(w):
     return _stem_cache[w]
 
 
+def _tekankan_klausa_kontras(tokens):
+    """Memberi bobot ekstra pada bagian setelah kata kontras agar keluhan/opini akhir lebih terangkat."""
+    idx_kontras = [i for i, tok in enumerate(tokens) if tok in KONTRAS]
+    if not idx_kontras:
+        return tokens
+    last_idx = idx_kontras[-1]
+    bagian_awal = tokens[: last_idx + 1]
+    bagian_akhir = tokens[last_idx + 1 :]
+    if not bagian_akhir:
+        return tokens
+    return bagian_awal + bagian_akhir + bagian_akhir
+
+
 def preprocess(text, return_stages=False):
     s0 = str(text)
     s1 = s0.lower()
@@ -88,15 +101,20 @@ def preprocess(text, return_stages=False):
     s6 = [w for w in s5 if w not in STOPWORDS]
     s7 = [stem_word(w) for w in s6]
     s8 = [w for w in s7 if len(w) > 1]
+    s9 = _tekankan_klausa_kontras(s8)
     if return_stages:
-        return [s0, s1, s2, s3, s4, " | ".join(s5), " | ".join(s6), " | ".join(s7), " | ".join(s8)]
-    return " ".join(s8)
+        return [
+            s0, s1, s2, s3, s4,
+            " | ".join(s5), " | ".join(s6), " | ".join(s7), " | ".join(s8),
+            " | ".join(s9),
+        ]
+    return " ".join(s9)
 
 
 STAGE_NAMES = [
     "Asli", "1. Case folding", "2. Hapus URL/mention", "3. Hapus simbol",
     "4. Huruf berulang", "5. Tokenisasi", "6. Stopword", "7. Stemming",
-    "8. Filter pendek",
+    "8. Filter pendek", "9. Bobot klausa kontras",
 ]
 
 
@@ -353,9 +371,9 @@ with tabs[0]:
 # ------------------------------------------------------- Preprocessing
 with tabs[1]:
     st.markdown(
-        "Delapan tahap preprocessing: case folding → hapus URL/mention → hapus simbol → "
+        "Tahapan preprocessing: case folding → hapus URL/mention → hapus simbol → "
         "huruf berulang → tokenisasi → stopword (negasi & kontras dipertahankan) → stemming "
-        "(Sastrawi) → filter token pendek."
+        "(Sastrawi) → filter token pendek → bobot klausa kontras."
     )
     if get_stemmer() is None:
         st.warning(
