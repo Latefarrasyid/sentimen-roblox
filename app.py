@@ -342,28 +342,43 @@ with tabs[3]:
 # -------------------------------------------------------------- Prediksi
 with tabs[4]:
     st.subheader("Coba prediksi ulasan baru")
-    teks = st.text_area("Tulis ulasan:", "game nya seru banget tapi sering lag dan harga robux mahal",
-                        height=100)
+    teks = st.text_area(
+        "Tulis ulasan:",
+        "game nya seru banget tapi sering lag dan harga robux mahal",
+        height=100,
+    )
     if st.button("Prediksi", type="primary"):
-        bersih = preprocess(teks)
-        if not bersih:
+        res = prediksi_teks(teks, vectorizer, nb)
+        if res is None:
             st.warning("Teks kosong setelah preprocessing. Coba kalimat lain.")
         else:
-            vec = tfidf.transform([bersih])
-            proba = nb.predict_proba(vec)[0]
-            pred = nb.classes_[proba.argmax()]
-            warna = {"positif": "success", "negatif": "error", "netral": "warning"}[pred]
-            getattr(st, warna)(f"Prediksi: **{pred.upper()}** ({proba.max():.1%})")
-            st.write("Teks setelah preprocessing:", f"`{bersih}`")
-            pdf = pd.DataFrame({"Kelas": nb.classes_, "Probabilitas": proba})
+            pred = res["prediksi"]
+            warna = {"positif": "success", "negatif": "error", "netral": "warning"}.get(pred, "info")
+            getattr(st, warna)(f"Prediksi: **{pred.upper()}** ({res['confidence']:.1%})")
+            st.write("Teks setelah preprocessing:", f"`{res['text_clean']}`")
+
+            pdf = pd.DataFrame(
+                {"Kelas": list(res["probabilitas"].keys()), "Probabilitas": list(res["probabilitas"].values())}
+            )
             fig, ax = plt.subplots(figsize=(6, 2.5))
-            ax.barh(pdf["Kelas"], pdf["Probabilitas"],
-                    color=[PALET.get(k, "#999") for k in pdf["Kelas"]])
+            ax.barh(
+                pdf["Kelas"], pdf["Probabilitas"], color=[PALET.get(k, "#999") for k in pdf["Kelas"]]
+            )
             ax.set_xlim(0, 1)
             for i, v in enumerate(pdf["Probabilitas"]):
                 ax.text(v + 0.01, i, f"{v:.1%}", va="center")
             plt.tight_layout()
             st.pyplot(fig)
+            plt.close(fig)
+
+            if not res["rincian_fitur"].empty:
+                st.markdown("**Rincian frekuensi kata & kontribusi skor per kelas**")
+                st.dataframe(res["rincian_fitur"], use_container_width=True)
+            else:
+                st.caption(
+                    "Tidak ada kata pada teks ini yang masuk ke kosakata model "
+                    "(coba turunkan `min_df` di sidebar)."
+                )
 
     st.markdown("---")
     st.subheader("Prediksi massal (CSV)")
@@ -373,22 +388,14 @@ with tabs[4]:
         if "content" not in bdf.columns:
             st.error("Kolom `content` tidak ditemukan.")
         else:
-            bdf["text_clean"] = bdf["content"].apply(preprocess)
-            bdf["prediksi"] = nb.predict(tfidf.transform(bdf["text_clean"]))
-            st.dataframe(bdf, use_container_width=True)
-            st.download_button("Unduh hasil", bdf.to_csv(index=False).encode("utf-8"),
-                               "hasil_prediksi.csv", "text/csv")
-
-# --------------------------------------------------------- Kalimat sering
-with tabs[5]:
-    top_n = st.slider("Jumlah baris", 5, 30, 10)
-    for sent in ["positif", "negatif"]:
-        if sent not in df["sentimen"].values:
-            continue
-        st.subheader(f"Kalimat {sent} yang sering muncul")
-        st.dataframe(tabel_kalimat_sering(df, sent, top_n), use_container_width=True)
-        st.subheader(f"Frasa 2 kata {sent}")
-        st.dataframe(top_bigram(df, sent, top_n), use_container_width=True)
+            hasil_batch = prediksi_csv(bdf, vectorizer, nb, col_teks="content")
+            st.dataframe(hasil_batch, use_container_width=True)
+            st.download_button(
+                "Unduh hasil",
+                hasil_batch.to_csv(index=False).encode("utf-8"),
+                "hasil_prediksi.csv",
+                "text/csv",
+            )
 
 # ---------------------------------------------------------- Nilai bisnis
 with tabs[6]:
