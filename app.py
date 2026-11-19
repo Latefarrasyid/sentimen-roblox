@@ -956,4 +956,6 @@ with tabs[6]:
 
 **Sentimen negatif: perbaiki (urut prioritas)**
 1. **Performa untuk HP spek rendah:** mode grafis hemat, batasi objek/pemain per server, perbaiki crash saat loading.
-2. **Verifikasi umur dan chat:** panduan Bahasa Indonesia
+2. **Verifikasi umur dan chat:** panduan Bahasa Indonesia, alternatif verifikasi yang lebih ramah pengguna, serta kejelasan aturan komunikasi antar-pemain.
+"""
+    )
