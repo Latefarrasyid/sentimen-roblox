@@ -56,12 +56,6 @@ LABELS = ["negatif", "netral", "positif"]
 PALET = {"negatif": "#d9534f", "netral": "#f0ad4e", "positif": "#5cb85c"}
 DEFAULT_CSV = "roblox_ulasan_dominan.csv"
 
-# Kata penanda kontras: ulasan yang memuat kata ini kemungkinan bersentimen campuran
-KATA_KONTRAS = {"tapi", "tetapi", "namun", "sayang", "sayangnya", "cuma", "hanya", "padahal", "walau",
-                "walaupun", "meski", "meskipun", "sedangkan"}
-AMBANG_YAKIN = 0.50      # probabilitas tertinggi minimal agar dianggap yakin
-AMBANG_SELISIH = 0.10    # selisih dua probabilitas teratas minimal agar dianggap yakin
-
 # ======================================================================
 # PREPROCESSING (sama dengan notebook)
 # ======================================================================
@@ -125,7 +119,6 @@ STAGE_NAMES = ["Asli", "1. Case folding", "2. Hapus URL/mention", "3. Hapus simb
                "4. Huruf berulang", "5. Tokenisasi", "6. Stopword", "7. Stemming",
                "8. Filter pendek"]
 
-# Penjelasan awam untuk tiap tahap preprocessing
 PENJELASAN_TAHAP = pd.DataFrame({
     "Tahap": ["1. Case folding", "2. Hapus URL/mention", "3. Hapus simbol",
               "4. Huruf berulang", "5. Tokenisasi", "6. Stopword",
@@ -172,8 +165,11 @@ def train_model(df, test_size, alpha, min_df, ngram_max, balance):
     else:
         train_fit = train_df
 
+    # Fit TF-IDF pada data training asli (sebelum oversampling) agar bobot tidak bias
     tfidf = TfidfVectorizer(ngram_range=(1, ngram_max), min_df=min_df, sublinear_tf=True)
-    X_fit = tfidf.fit_transform(train_fit["text_clean"])
+    tfidf.fit(train_df["text_clean"])
+
+    X_fit = tfidf.transform(train_fit["text_clean"])
     X_train = tfidf.transform(train_df["text_clean"])
     X_test = tfidf.transform(test_df["text_clean"])
 
@@ -236,22 +232,6 @@ def kata_dominan(df, sentimen, top=7):
     return pd.DataFrame({"Kata dominan (jumlah)": baris}).rename_axis("Kategori")
 
 
-def kontribusi_kata(vec, tfidf, nb):
-    """Tabel kontribusi tiap kata terhadap tiap kelas.
-
-    Nilai = bobot TF-IDF kata x log-probabilitas kata pada kelas tersebut.
-    Semakin tinggi (kurang negatif) berarti kata itu semakin 'menarik' ke kelas tsb.
-    """
-    fitur = np.array(tfidf.get_feature_names_out())
-    idx = vec.nonzero()[1]
-    bobot = np.asarray(vec[0, idx].todense()).ravel()
-    data = {k: bobot * nb.feature_log_prob_[i][idx] for i, k in enumerate(nb.classes_)}
-    tabel = pd.DataFrame(data, index=fitur[idx])
-    if {"positif", "negatif"}.issubset(tabel.columns):
-        tabel["condong"] = np.where(tabel["positif"] > tabel["negatif"], "positif", "negatif")
-    return tabel
-
-
 # ======================================================================
 # FUNGSI PENJELASAN OTOMATIS (mengikuti data yang tampil)
 # ======================================================================
@@ -262,7 +242,6 @@ def kata_teratas(df, sentimen, top=8):
 
 
 def penjelasan_wordcloud(df, sentimen):
-    """Penjelasan word cloud berdasarkan data sentimen yang sedang ditampilkan."""
     n_ulasan = int((df["sentimen"] == sentimen).sum())
     top = kata_teratas(df, sentimen, 8)
     if not top:
@@ -278,7 +257,6 @@ def penjelasan_wordcloud(df, sentimen):
 
 
 def penjelasan_wordcloud_gabungan(df):
-    """Kata yang muncul di kedua word cloud."""
     a = {w for w, _ in kata_teratas(df, "positif", 15)}
     b = {w for w, _ in kata_teratas(df, "negatif", 15)}
     sama = sorted(a & b)
@@ -577,27 +555,9 @@ with tabs[4]:
         else:
             vec = tfidf.transform([bersih])
             proba = nb.predict_proba(vec)[0]
-            urut = np.argsort(proba)[::-1]
-            pred = nb.classes_[urut[0]]
-            selisih = proba[urut[0]] - proba[urut[1]] if len(urut) > 1 else 1.0
-            ragu = proba.max() < AMBANG_YAKIN or selisih < AMBANG_SELISIH
-            ada_kontras = bool(KATA_KONTRAS & set(str(teks).lower().split()))
-
+            pred = nb.classes_[proba.argmax()]
             warna = {"positif": "success", "negatif": "error", "netral": "warning"}[pred]
             getattr(st, warna)(f"Prediksi: **{pred.upper()}** ({proba.max():.1%})")
-
-            if ragu or ada_kontras:
-                alasan = []
-                if ragu:
-                    alasan.append(f"selisih dua kelas teratas hanya {selisih:.1%}"
-                                  if selisih < AMBANG_SELISIH
-                                  else f"probabilitas tertinggi hanya {proba.max():.1%}")
-                if ada_kontras:
-                    alasan.append("ada kata kontras (mis. 'tapi', 'namun') yang menandakan opini campuran")
-                st.warning("⚠️ **Ulasan kemungkinan bersentimen campuran / model kurang yakin**: "
-                           + "; ".join(alasan) + ". Model berbasis bag-of-words tidak memahami "
-                           "makna kontras, hanya menjumlahkan bukti dari tiap kata.")
-
             st.write("Teks setelah preprocessing:", f"`{bersih}`")
             pdf = pd.DataFrame({"Kelas": nb.classes_, "Probabilitas": proba})
             fig, ax = plt.subplots(figsize=(6, 2.5))
@@ -609,20 +569,22 @@ with tabs[4]:
             plt.tight_layout()
             st.pyplot(fig)
 
-            with st.expander("🔍 Kenapa hasilnya begini? (kontribusi tiap kata)"):
-                kontrib = kontribusi_kata(vec, tfidf, nb)
-                if kontrib.empty:
-                    st.write("Tidak ada kata yang dikenali model (semua kata di luar kosakata).")
-                else:
-                    st.caption("Nilai = bobot TF-IDF × log-probabilitas kata pada kelas. "
-                               "Semakin tinggi (kurang negatif) di suatu kolom, semakin kuat kata itu "
-                               "menarik prediksi ke kelas tersebut. Kolom 'condong' menunjukkan "
-                               "positif atau negatif yang lebih kuat untuk kata tsb.")
-                    st.dataframe(kontrib.round(3), use_container_width=True)
-                    if "condong" in kontrib.columns:
-                        hitung_c = kontrib["condong"].value_counts()
-                        st.write("Jumlah kata yang condong: " +
-                                 ", ".join(f"**{k}**: {v}" for k, v in hitung_c.items()))
+            # Rincian token yang masuk ke kosakata TF-IDF dan skor per kelas
+            nz_idx = vec.nonzero()[1]
+            fitur_all = tfidf.get_feature_names_out()
+            if len(nz_idx) > 0:
+                st.markdown("**Rincian fitur aktif dalam kalimat ini**")
+                baris_fitur = []
+                for idx in nz_idx:
+                    w = fitur_all[idx]
+                    w_tfidf = vec[0, idx]
+                    row = {"Fitur": w, "Bobot TF-IDF": round(float(w_tfidf), 3)}
+                    for c_i, kelas in enumerate(nb.classes_):
+                        row[f"Skor {kelas}"] = round(float(w_tfidf * nb.feature_log_prob_[c_i, idx]), 3)
+                    baris_fitur.append(row)
+                st.dataframe(pd.DataFrame(baris_fitur), use_container_width=True)
+            else:
+                st.caption("Tidak ada kata/frasa pada teks ini yang masuk ke kosakata TF-IDF (coba turunkan `min_df` di sidebar).")
 
     st.markdown("---")
     st.subheader("Prediksi massal (CSV)")
@@ -633,10 +595,7 @@ with tabs[4]:
             st.error("Kolom `content` tidak ditemukan.")
         else:
             bdf["text_clean"] = bdf["content"].apply(preprocess)
-            proba_b = nb.predict_proba(tfidf.transform(bdf["text_clean"]))
-            bdf["prediksi"] = nb.classes_[proba_b.argmax(axis=1)]
-            bdf["keyakinan"] = proba_b.max(axis=1).round(4)
-            bdf["ragu"] = bdf["keyakinan"] < AMBANG_YAKIN
+            bdf["prediksi"] = nb.predict(tfidf.transform(bdf["text_clean"]))
             st.dataframe(bdf, use_container_width=True)
             st.download_button("Unduh hasil", bdf.to_csv(index=False).encode("utf-8"),
                                "hasil_prediksi.csv", "text/csv")
