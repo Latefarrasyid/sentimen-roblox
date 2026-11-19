@@ -9,7 +9,7 @@ import seaborn as sns
 import streamlit as st
 from wordcloud import WordCloud
 
-from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 from sklearn.model_selection import StratifiedShuffleSplit
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.metrics import (
@@ -211,7 +211,7 @@ PENJELASAN_TAHAP = pd.DataFrame(
 
 
 # ======================================================================
-# DATA & MODEL (CountVectorizer + Multinomial Naive Bayes)
+# DATA & MODEL (TF-IDF + Multinomial Naive Bayes)
 # ======================================================================
 @st.cache_data(show_spinner="Preprocessing teks...")
 def load_and_clean(raw: pd.DataFrame):
@@ -242,68 +242,21 @@ def train_model(df, test_size, alpha, min_df, ngram_max, balance):
     else:
         train_fit = train_df
 
-    vec_model = CountVectorizer(ngram_range=(1, ngram_max), min_df=min_df)
-    vec_model.fit(train_df["text_clean"])
-
-    X_fit = vec_model.transform(train_fit["text_clean"])
-    X_train = vec_model.transform(train_df["text_clean"])
-    X_test = vec_model.transform(test_df["text_clean"])
+    tfidf = TfidfVectorizer(ngram_range=(1, ngram_max), min_df=min_df, sublinear_tf=True)
+    X_fit = tfidf.fit_transform(train_fit["text_clean"])
+    X_train = tfidf.transform(train_df["text_clean"])
+    X_test = tfidf.transform(test_df["text_clean"])
 
     nb = MultinomialNB(alpha=alpha).fit(X_fit, train_fit["sentimen"])
     return dict(
         train_df=train_df,
         test_df=test_df,
         train_fit=train_fit,
-        vectorizer=vec_model,
+        tfidf=tfidf,
         nb=nb,
         pred_train=nb.predict(X_train),
         pred_test=nb.predict(X_test),
     )
-
-
-# ======================================================================
-# LOGIKA PREDIKSI TERSERAGAM (SATUAN & MASSAL)
-# ======================================================================
-def prediksi_teks(teks: str, vectorizer, nb):
-    bersih = preprocess(teks)
-    if not bersih.strip():
-        return None
-
-    vec = vectorizer.transform([bersih])
-    proba = nb.predict_proba(vec)[0]
-    pred = nb.classes_[int(np.argmax(proba))]
-
-    nz_idx = vec.nonzero()[1]
-    fitur_all = vectorizer.get_feature_names_out()
-    rincian = []
-    for idx in nz_idx:
-        w = fitur_all[idx]
-        cnt = int(vec[0, idx])
-        row = {"Fitur": w, "Frekuensi (Count)": cnt}
-        for c_i, kelas in enumerate(nb.classes_):
-            row[f"Skor {kelas}"] = round(float(cnt * nb.feature_log_prob_[c_i, idx]), 3)
-        rincian.append(row)
-
-    return {
-        "teks_asli": teks,
-        "text_clean": bersih,
-        "prediksi": pred,
-        "confidence": float(np.max(proba)),
-        "probabilitas": dict(zip(nb.classes_, proba)),
-        "rincian_fitur": pd.DataFrame(rincian),
-    }
-
-
-def prediksi_csv(df_baru: pd.DataFrame, vectorizer, nb, col_teks: str = "content"):
-    out = df_baru.copy()
-    out["text_clean"] = out[col_teks].fillna("").astype(str).apply(preprocess)
-    X_baru = vectorizer.transform(out["text_clean"])
-    proba = nb.predict_proba(X_baru)
-    out["prediksi"] = nb.classes_[np.argmax(proba, axis=1)]
-    out["confidence"] = (np.max(proba, axis=1) * 100).round(2)
-    for i, kelas in enumerate(nb.classes_):
-        out[f"prob_{kelas}"] = proba[:, i].round(4)
-    return out
 
 
 def hitung(y, p):
@@ -608,11 +561,11 @@ alpha = st.sidebar.slider(
 ngram_max = st.sidebar.selectbox(
     "N-gram maksimum",
     [1, 2, 3],
-    index=0,
+    index=1,
     help="1 = kata tunggal (unigram murni), 2 = unigram + bigram, 3 = sampai trigram.",
 )
 min_df = st.sidebar.slider(
-    "min_df frekuensi kata",
+    "min_df TF-IDF",
     1,
     5,
     2,
@@ -628,7 +581,7 @@ balance = st.sidebar.checkbox(
 # HEADER
 # ======================================================================
 st.title("🎮 Klasifikasi Sentimen Ulasan Roblox")
-st.caption("CountVectorizer + Multinomial Naive Bayes · pelabelan leksikon per kategori")
+st.caption("TF-IDF + Multinomial Naive Bayes · pelabelan leksikon per kategori")
 
 if raw is None:
     st.info(
@@ -651,7 +604,7 @@ if df["sentimen"].nunique() < 2:
 
 m = train_model(df, test_size, alpha, min_df, ngram_max, balance)
 train_df, test_df = m["train_df"], m["test_df"]
-vectorizer, nb = m["vectorizer"], m["nb"]
+tfidf, nb = m["tfidf"], m["nb"]
 
 tabs = st.tabs(
     [
@@ -670,7 +623,7 @@ with tabs[0]:
     c1, c2, c3 = st.columns(3)
     c1.metric("Baris data mentah", len(raw))
     c2.metric("Setelah buang teks kosong", len(df))
-    c3.metric("Jumlah fitur kata/n-gram", len(vectorizer.get_feature_names_out()))
+    c3.metric("Jumlah fitur TF-IDF", len(tfidf.get_feature_names_out()))
 
     st.subheader("Distribusi sentimen")
     col_a, col_b = st.columns(2)
@@ -825,7 +778,7 @@ with tabs[3]:
     )
 
     st.subheader("Kata paling berpengaruh per kelas (Naive Bayes)")
-    fitur = np.array(vectorizer.get_feature_names_out())
+    fitur = np.array(tfidf.get_feature_names_out())
     top_fitur = {
         k: fitur[np.argsort(nb.feature_log_prob_[i])[::-1][:12]]
         for i, k in enumerate(nb.classes_)
@@ -845,18 +798,17 @@ with tabs[4]:
         height=100,
     )
     if st.button("Prediksi", type="primary"):
-        res = prediksi_teks(teks, vectorizer, nb)
-        if res is None:
+        bersih = preprocess(teks)
+        if not bersih:
             st.warning("Teks kosong setelah preprocessing. Coba kalimat lain.")
         else:
-            pred = res["prediksi"]
+            vec = tfidf.transform([bersih])
+            proba = nb.predict_proba(vec)[0]
+            pred = nb.classes_[proba.argmax()]
             warna = {"positif": "success", "negatif": "error", "netral": "warning"}.get(pred, "info")
-            getattr(st, warna)(f"Prediksi: **{pred.upper()}** ({res['confidence']:.1%})")
-            st.write("Teks setelah preprocessing:", f"`{res['text_clean']}`")
-
-            pdf = pd.DataFrame(
-                {"Kelas": list(res["probabilitas"].keys()), "Probabilitas": list(res["probabilitas"].values())}
-            )
+            getattr(st, warna)(f"Prediksi: **{pred.upper()}** ({proba.max():.1%})")
+            st.write("Teks setelah preprocessing:", f"`{bersih}`")
+            pdf = pd.DataFrame({"Kelas": nb.classes_, "Probabilitas": proba})
             fig, ax = plt.subplots(figsize=(6, 2.5))
             ax.barh(
                 pdf["Kelas"], pdf["Probabilitas"], color=[PALET.get(k, "#999") for k in pdf["Kelas"]]
@@ -868,15 +820,6 @@ with tabs[4]:
             st.pyplot(fig)
             plt.close(fig)
 
-            if not res["rincian_fitur"].empty:
-                st.markdown("**Rincian frekuensi kata & kontribusi skor per kelas**")
-                st.dataframe(res["rincian_fitur"], use_container_width=True)
-            else:
-                st.caption(
-                    "Tidak ada kata pada teks ini yang masuk ke kosakata model "
-                    "(coba turunkan `min_df` di sidebar)."
-                )
-
     st.markdown("---")
     st.subheader("Prediksi massal (CSV)")
     batch = st.file_uploader("CSV dengan kolom `content`", type="csv", key="batch")
@@ -885,11 +828,12 @@ with tabs[4]:
         if "content" not in bdf.columns:
             st.error("Kolom `content` tidak ditemukan.")
         else:
-            hasil_batch = prediksi_csv(bdf, vectorizer, nb, col_teks="content")
-            st.dataframe(hasil_batch, use_container_width=True)
+            bdf["text_clean"] = bdf["content"].fillna("").astype(str).apply(preprocess)
+            bdf["prediksi"] = nb.predict(tfidf.transform(bdf["text_clean"]))
+            st.dataframe(bdf, use_container_width=True)
             st.download_button(
                 "Unduh hasil",
-                hasil_batch.to_csv(index=False).encode("utf-8"),
+                bdf.to_csv(index=False).encode("utf-8"),
                 "hasil_prediksi.csv",
                 "text/csv",
             )
@@ -910,9 +854,13 @@ with tabs[6]:
     ct = pd.crosstab(df["kategori"], df["sentimen"]).reindex(columns=labels_aktif, fill_value=0)
     ct["Total"] = ct.sum(axis=1)
     if "negatif" in ct.columns:
-        ct["% Negatif"] = (ct["negatif"] / ct["Total"].replace(0, np.nan) * 100).round(1).fillna(0.0)
+        ct["% Negatif"] = (
+            (ct["negatif"] / ct["Total"].replace(0, np.nan) * 100).round(1).fillna(0.0)
+        )
     if "positif" in ct.columns:
-        ct["% Positif"] = (ct["positif"] / ct["Total"].replace(0, np.nan) * 100).round(1).fillna(0.0)
+        ct["% Positif"] = (
+            (ct["positif"] / ct["Total"].replace(0, np.nan) * 100).round(1).fillna(0.0)
+        )
 
     sort_col = "% Negatif" if "% Negatif" in ct.columns else "Total"
     st.subheader("Sebaran sentimen per kategori")
@@ -956,6 +904,10 @@ with tabs[6]:
 
 **Sentimen negatif: perbaiki (urut prioritas)**
 1. **Performa untuk HP spek rendah:** mode grafis hemat, batasi objek/pemain per server, perbaiki crash saat loading.
-2. **Verifikasi umur dan chat:** panduan Bahasa Indonesia, alternatif verifikasi yang lebih ramah pengguna, serta kejelasan aturan komunikasi antar-pemain.
+2. **Verifikasi umur dan chat:** panduan Bahasa Indonesia, alternatif verifikasi, pesan error jelas, jalur banding cepat.
+3. **Keamanan akun dan anti-cheat:** captcha tidak berulang, pemulihan akun cepat, banding ban transparan.
+4. **Harga lebih adil per wilayah:** paket Robux lokal, promo berkala, komunikasi jelas saat harga berubah.
+5. **Komunikasi update:** catatan rilis Bahasa Indonesia, rollout bertahap, balas ulasan negatif dengan solusi.
+6. **Pantau sentimen berkala** memakai model ini pada ulasan baru.
 """
     )
