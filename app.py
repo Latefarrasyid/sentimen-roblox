@@ -43,7 +43,8 @@ sangat banget sekali bgt amat the is it to a an and of i my you
 roblox roblok mau buat bikin kasih sedang masih
 """.split())
 NEGASI = {"tidak", "bukan", "belum", "jangan", "tanpa", "kurang", "tak"}
-STOPWORDS -= NEGASI
+KONTRAS = {"tapi", "namun", "sayangnya", "padahal", "meski", "meskipun", "walaupun"}
+STOPWORDS = (STOPWORDS - NEGASI) - KONTRAS
 
 PROTECT_STEM = {
     "perbaiki", "kembalikan", "turunkan", "hapus", "bagus", "game", "robux",
@@ -353,7 +354,7 @@ with tabs[0]:
 with tabs[1]:
     st.markdown(
         "Delapan tahap preprocessing: case folding → hapus URL/mention → hapus simbol → "
-        "huruf berulang → tokenisasi → stopword (negasi dipertahankan) → stemming "
+        "huruf berulang → tokenisasi → stopword (negasi & kontras dipertahankan) → stemming "
         "(Sastrawi) → filter token pendek."
     )
     if get_stemmer() is None:
