@@ -448,7 +448,7 @@ tfidf, nb = m["tfidf"], m["nb"]
 
 jelaskan(f"""
 **Dashboard ini untuk apa?** Membaca **{len(df):,} ulasan** Roblox lalu menyimpulkan apakah tiap ulasan
-**positif**, **netral**, atau **negatif**, dan topik apa yang paling banyak dikeluhkan.
+**positif** dan **negatif**, dan topik apa yang paling banyak dikeluhkan.
 
 **Urutan membaca:** 📄 Data → 🧹 Preprocessing → ☁️ Word Cloud → 📊 Evaluasi → 🔮 Prediksi →
 💬 Kalimat Sering → 💼 Nilai Bisnis. Di setiap tab ada kotak *Penjelasan* yang otomatis
