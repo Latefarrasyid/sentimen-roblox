@@ -41,7 +41,7 @@ STOPWORDS -= NEGASI
 
 PROTECT_STEM = {"perbaiki", "kembalikan", "turunkan", "hapus", "bagus", "game", "robux",
                 "verifikasi", "tolong", "mahal", "murah", "seru", "mantap", "keren", "server",
-                "update", "akun", "marketplace", "chat", "lag", "bug", "error", "login",
+                "update", "akun", "marketplace", "chat", "lag", "bug", "lemot", "error", "login",
                 "download", "aturan", "peraturan"}
 
 # Kata kunci untuk koreksi di tab Prediksi (bentuk sudah dibersihkan/stem)
