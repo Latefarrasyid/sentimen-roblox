@@ -331,10 +331,12 @@ def narasi_cm_persen(cm, labels):
 # ======================================================================
 st.markdown("""
 <style>
-[data-testid="stSidebarUserContent"] { padding-top: 1rem; }
-.sb-title { font-size: 1.3rem; font-weight: 700; line-height: 1.25; padding: .7rem .9rem;
-            border-radius: .6rem; background: rgba(128,128,128,.14); margin-bottom: .6rem; }
-.sb-title small { display: block; font-weight: 400; font-size: .78rem; opacity: .7; margin-top: .15rem; }
+[data-testid="stSidebarHeader"] { padding-top: .5rem; padding-bottom: 0; min-height: 0; height: 2.5rem; }
+[data-testid="stSidebarUserContent"] { padding-top: 0; }
+.sb-title { position: relative; z-index: 1; margin-top: -2.6rem; width: calc(100% - 3rem);
+            font-size: 1.15rem; font-weight: 700; line-height: 1.2; padding: .45rem .8rem;
+            border-radius: .6rem; background: rgba(128,128,128,.14); margin-bottom: 1rem; }
+.sb-title small { display: block; font-weight: 400; font-size: .72rem; opacity: .7; margin-top: .1rem; }
 .sb-section { font-size: .78rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
               opacity: .75; margin: .3rem 0 .3rem 0; }
 </style>
