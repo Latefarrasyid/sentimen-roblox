@@ -423,7 +423,7 @@ if raw is None:
             "(atau taruh file itu satu folder dengan `app.py`).")
     jelaskan("""
 **Dashboard ini untuk apa?** Membaca ribuan ulasan pemain Roblox lalu menyimpulkan apakah
-ulasan itu **positif**, **netral**, atau **negatif**, dan topik apa yang paling banyak dikeluhkan.
+ulasan itu **positif** dan **negatif**, dan topik apa yang paling banyak dikeluhkan.
 
 **Cara pakai:** (1) upload file CSV di sidebar kiri → (2) buka tab satu per satu dari kiri ke kanan →
 (3) baca kotak *Penjelasan* di tiap tab, isinya otomatis menyesuaikan dengan data Anda.
