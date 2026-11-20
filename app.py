@@ -44,6 +44,17 @@ PROTECT_STEM = {"perbaiki", "kembalikan", "turunkan", "hapus", "bagus", "game", 
                 "update", "akun", "marketplace", "chat", "lag", "bug", "error", "login",
                 "download", "aturan", "peraturan"}
 
+# Kata kunci untuk koreksi di tab Prediksi (bentuk sudah dibersihkan/stem)
+NEG_CUES = {"lag", "ngelag", "lemot", "lelet", "lambat", "mahal", "bug", "error", "eror",
+            "crash", "macet", "gagal", "rusak", "jelek", "buruk", "parah", "kecewa",
+            "bosan", "bosen", "ribet", "susah", "sulit", "hack", "hacker", "cheat",
+            "scam", "tipu", "ban", "banned", "blokir", "hilang", "sampah", "toxic",
+            "kesal", "sebel", "ganggu", "nyebelin", "disconnect", "kick"}
+POS_CUES = {"seru", "bagus", "keren", "mantap", "mantul", "asik", "asyik", "suka",
+            "senang", "puas", "menarik", "terbaik", "murah", "lancar", "mudah",
+            "cinta", "top", "recommended", "worth", "puas", "hibur"}
+KONTRAS = {"tapi", "tetapi", "namun", "cuma", "hanya", "sayang", "sayangnya", "sayangny"}
+
 
 @st.cache_resource
 def get_stemmer():
@@ -180,6 +191,63 @@ def kata_dominan(df, sentimen, top=7):
 
 
 # ======================================================================
+# PREDIKSI (Naive Bayes + koreksi kata kunci)
+# ======================================================================
+def skor_kata_kunci(tokens):
+    """Hitung skor kata bernada positif/negatif. Memperhitungkan negasi
+    ('tidak bagus' -> negatif) dan kata kontras ('tapi' -> kata sesudahnya lebih penting)."""
+    pos = neg = 0.0
+    kp, kn = [], []
+    kontras = False
+    for i, w in enumerate(tokens):
+        if w in KONTRAS:
+            kontras = True
+            continue
+        if w in NEG_CUES:
+            pol = -1
+        elif w in POS_CUES:
+            pol = 1
+        else:
+            continue
+        if i > 0 and tokens[i - 1] in NEGASI:
+            pol = -pol
+        bobot = 1.5 if kontras else 1.0
+        if pol > 0:
+            pos += bobot
+            kp.append(w)
+        else:
+            neg += bobot
+            kn.append(w)
+    return pos, neg, kp, kn
+
+
+def prediksi_teks(bersih, tfidf, nb, pakai_koreksi=True):
+    """Kembalikan (proba_akhir, proba_nb_murni, kata_pos, kata_neg, dikoreksi)."""
+    p_nb = nb.predict_proba(tfidf.transform([bersih]))[0]
+    pos, neg, kp, kn = skor_kata_kunci(bersih.split())
+    if not pakai_koreksi or (pos + neg) == 0:
+        return p_nb, p_nb, kp, kn, False
+    kelas = list(nb.classes_)
+    p_lex = np.zeros(len(kelas))
+    if abs(pos - neg) < 1e-9 and "netral" in kelas:
+        p_lex[kelas.index("netral")] = 0.6
+        if "positif" in kelas:
+            p_lex[kelas.index("positif")] = 0.2
+        if "negatif" in kelas:
+            p_lex[kelas.index("negatif")] = 0.2
+    else:
+        if "positif" in kelas:
+            p_lex[kelas.index("positif")] = pos / (pos + neg)
+        if "negatif" in kelas:
+            p_lex[kelas.index("negatif")] = neg / (pos + neg)
+    if p_lex.sum() == 0:
+        return p_nb, p_nb, kp, kn, False
+    p_lex = p_lex / p_lex.sum()
+    p = 0.3 * p_nb + 0.7 * p_lex
+    return p / p.sum(), p_nb, kp, kn, True
+
+
+# ======================================================================
 # HELPER PENJELASAN OTOMATIS
 # ======================================================================
 def top_kata(df, sentimen, kategori=None, n=5):
@@ -215,13 +283,68 @@ def jelaskan(md, judul="📖 Penjelasan untuk pemula", expanded=True):
             st.markdown(md)
 
 
+def narasi_cm_jumlah(cm, labels, nama):
+    total = int(cm.sum())
+    benar = int(np.trace(cm))
+    teks = (f"- Pada data **{nama}** ada **{total:,}** ulasan. Sebanyak **{benar:,}** ditebak benar "
+            f"(**{pct(benar / max(total, 1))}**), yaitu angka di diagonal (kiri-atas ke kanan-bawah).\n")
+    for i, l in enumerate(labels):
+        n = int(cm[i].sum())
+        if n == 0:
+            continue
+        d = int(cm[i, i])
+        salah = n - d
+        if salah > 0:
+            off = cm[i].copy()
+            off[i] = -1
+            j = int(off.argmax())
+            tambah = f" Salahnya paling banyak ditebak sebagai **{labels[j]}** ({int(cm[i, j]):,} ulasan)."
+        else:
+            tambah = " Tidak ada yang salah."
+        teks += (f"- Ulasan yang sebenarnya **{l}** ada {n:,}: **{d:,}** benar ({pct(d / n)}), "
+                 f"{salah:,} salah.{tambah}\n")
+    return teks
+
+
+def narasi_cm_persen(cm, labels):
+    teks = ("- Setiap **baris** dijumlahkan menjadi 100%, jadi angkanya adil dibandingkan antar kelas "
+            "walau jumlah ulasan tiap kelas berbeda.\n")
+    recall_baris = {}
+    for i, l in enumerate(labels):
+        n = cm[i].sum()
+        if n == 0:
+            continue
+        recall_baris[l] = cm[i, i] / n
+        sisa = [(labels[j], cm[i, j] / n) for j in range(len(labels)) if j != i and cm[i, j] > 0]
+        sisa_txt = ("; sisanya ditebak " + ", ".join(f"**{k}** {pct(v)}" for k, v in sisa)) if sisa else ""
+        teks += f"- Dari semua ulasan **{l}**, **{pct(recall_baris[l])}** berhasil dikenali{sisa_txt}.\n"
+    if recall_baris:
+        best = max(recall_baris, key=recall_baris.get)
+        worst = min(recall_baris, key=recall_baris.get)
+        teks += (f"- Kelas yang **paling mudah dikenali**: **{best}** ({pct(recall_baris[best])}). "
+                 f"Yang **paling sulit**: **{worst}** ({pct(recall_baris[worst])}).")
+    return teks
+
+
 # ======================================================================
 # SIDEBAR
 # ======================================================================
+st.markdown("""
+<style>
+[data-testid="stSidebarUserContent"] { padding-top: 1rem; }
+.sb-title { font-size: 1.3rem; font-weight: 700; line-height: 1.25; padding: .7rem .9rem;
+            border-radius: .6rem; background: rgba(128,128,128,.14); margin-bottom: .6rem; }
+.sb-title small { display: block; font-weight: 400; font-size: .78rem; opacity: .7; margin-top: .15rem; }
+.sb-section { font-size: .78rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+              opacity: .75; margin: .3rem 0 .3rem 0; }
+</style>
+""", unsafe_allow_html=True)
+
 DEFAULT_PARAM = dict(p_test=0.2, p_alpha=0.5, p_ngram=2, p_mindf=2, p_balance=True)
 for _k, _v in DEFAULT_PARAM.items():
     st.session_state.setdefault(_k, _v)
 st.session_state.setdefault("show_help", True)
+st.session_state.setdefault("pakai_koreksi", True)
 
 
 def reset_param():
@@ -229,59 +352,63 @@ def reset_param():
         st.session_state[k] = v
 
 
-with st.sidebar:
-    st.title("⚙️ Pengaturan")
+def sb_section(teks):
+    st.sidebar.markdown(f'<div class="sb-section">{teks}</div>', unsafe_allow_html=True)
 
-    # ---- 1. Data
-    st.markdown("### 1️⃣ Data")
-    upload = st.file_uploader("Upload CSV hasil pelabelan leksikon", type="csv",
-                              help="File harus punya kolom: content (teks ulasan), "
-                                   "kategori (topik ulasan), sentimen (positif/netral/negatif).")
-    st.caption("Kolom wajib: `content`, `kategori`, `sentimen`")
 
-    raw = None
-    if upload is not None:
-        raw = pd.read_csv(upload)
-        st.success(f"✅ File diupload: {upload.name}")
-    else:
-        try:
-            raw = pd.read_csv(DEFAULT_CSV)
-            st.success(f"✅ Memakai file lokal: {DEFAULT_CSV}")
-        except FileNotFoundError:
-            st.warning("Belum ada data. Upload CSV di atas.")
+st.sidebar.markdown('<div class="sb-title">⚙️ Pengaturan'
+                    '<small>Atur data dan model di sini</small></div>', unsafe_allow_html=True)
 
-    st.divider()
+# ---- 1. Data
+sb_section("1 · Data")
+upload = st.sidebar.file_uploader("Upload CSV hasil pelabelan leksikon", type="csv",
+                                  help="File harus punya kolom: content (teks ulasan), "
+                                       "kategori (topik ulasan), sentimen (positif/netral/negatif).")
+st.sidebar.caption("Kolom wajib: `content`, `kategori`, `sentimen`")
 
-    # ---- 2. Parameter model
-    st.markdown("### 2️⃣ Parameter model")
-    with st.expander("Atur parameter (opsional)", expanded=False):
-        st.caption("Nilai bawaan sudah cukup baik. Ubah hanya jika ingin bereksperimen.")
-        test_size = st.slider("Porsi data testing", 0.1, 0.4, step=0.05, key="p_test",
-                              help="Bagian data yang disimpan untuk menguji model. "
-                                   "0.2 artinya 20% data untuk ujian, 80% untuk belajar.")
-        alpha = st.slider("Alpha (smoothing)", 0.1, 2.0, step=0.1, key="p_alpha",
-                          help="Penghalus agar model tidak terlalu yakin pada kata yang jarang muncul. "
-                               "Makin besar = makin 'hati-hati'.")
-        ngram_max = st.selectbox("N-gram maksimum", [1, 2, 3], key="p_ngram",
-                                 help="1 = hanya kata tunggal. 2 = kata tunggal + pasangan dua kata "
-                                      "(mis. 'tidak bagus'). 3 = sampai tiga kata.")
-        min_df = st.slider("Minimal kemunculan kata", 1, 5, key="p_mindf",
-                           help="Kata yang muncul di kurang dari N ulasan diabaikan "
-                                "(biasanya salah ketik atau terlalu langka).")
-        balance = st.checkbox("Seimbangkan data training", key="p_balance",
-                              help="Memperbanyak contoh kelas yang sedikit supaya model tidak "
-                                   "hanya hafal kelas yang paling banyak.")
-        st.button("↩️ Kembalikan ke nilai bawaan", on_click=reset_param, use_container_width=True)
+raw = None
+if upload is not None:
+    raw = pd.read_csv(upload)
+    st.sidebar.success(f"✅ File diupload: {upload.name}")
+else:
+    try:
+        raw = pd.read_csv(DEFAULT_CSV)
+        st.sidebar.success(f"✅ Memakai file lokal: {DEFAULT_CSV}")
+    except FileNotFoundError:
+        st.sidebar.warning("Belum ada data. Upload CSV di atas.")
 
-    st.divider()
+st.sidebar.divider()
 
-    # ---- 3. Tampilan
-    st.markdown("### 3️⃣ Tampilan")
-    st.toggle("Tampilkan penjelasan untuk pemula", key="show_help",
-              help="Matikan jika Anda sudah paham dan ingin tampilan lebih ringkas.")
+# ---- 2. Parameter model
+sb_section("2 · Parameter model")
+with st.sidebar.expander("Atur parameter (opsional)", expanded=False):
+    st.caption("Nilai bawaan sudah cukup baik. Ubah hanya jika ingin bereksperimen.")
+    test_size = st.slider("Porsi data testing", 0.1, 0.4, step=0.05, key="p_test",
+                          help="Bagian data yang disimpan untuk menguji model. "
+                               "0.2 artinya 20% data untuk ujian, 80% untuk belajar.")
+    alpha = st.slider("Alpha (smoothing)", 0.1, 2.0, step=0.1, key="p_alpha",
+                      help="Penghalus agar model tidak terlalu yakin pada kata yang jarang muncul. "
+                           "Makin besar = makin 'hati-hati'.")
+    ngram_max = st.selectbox("N-gram maksimum", [1, 2, 3], key="p_ngram",
+                             help="1 = hanya kata tunggal. 2 = kata tunggal + pasangan dua kata "
+                                  "(mis. 'tidak bagus'). 3 = sampai tiga kata.")
+    min_df = st.slider("Minimal kemunculan kata", 1, 5, key="p_mindf",
+                       help="Kata yang muncul di kurang dari N ulasan diabaikan "
+                            "(biasanya salah ketik atau terlalu langka).")
+    balance = st.checkbox("Seimbangkan data training", key="p_balance",
+                          help="Memperbanyak contoh kelas yang sedikit supaya model tidak "
+                               "hanya hafal kelas yang paling banyak.")
+    st.button("↩️ Kembalikan ke nilai bawaan", on_click=reset_param, use_container_width=True)
 
-    st.divider()
-    st.caption("TF-IDF + Multinomial Naive Bayes")
+st.sidebar.divider()
+
+# ---- 3. Tampilan
+sb_section("3 · Tampilan")
+st.sidebar.toggle("Tampilkan penjelasan untuk pemula", key="show_help",
+                  help="Matikan jika Anda sudah paham dan ingin tampilan lebih ringkas.")
+
+st.sidebar.divider()
+st.sidebar.caption("TF-IDF + Multinomial Naive Bayes")
 
 # ======================================================================
 # HEADER
@@ -328,14 +455,13 @@ menyesuaikan dengan data dan pengaturan Anda saat ini.
 
 tabs = st.tabs(["📄 Data", "🧹 Preprocessing", "☁️ Word Cloud", "📊 Evaluasi",
                 "🔮 Prediksi", "💬 Kalimat Sering", "💼 Nilai Bisnis"])
+n_fitur = len(tfidf.get_feature_names_out())
 
 # ---------------------------------------------------------------- Data
 with tabs[0]:
     vc = df["sentimen"].value_counts()
     n_dibuang = len(raw) - len(df)
-    n_fitur = len(tfidf.get_feature_names_out())
 
-    # --- penjelasan otomatis
     dom, minor = vc.index[0], vc.index[-1]
     rasio = vc.iloc[0] / max(vc.iloc[-1], 1)
     kalimat_seimbang = (
@@ -348,9 +474,13 @@ with tabs[0]:
            "Pengaturan *Seimbangkan data training* sedang **mati**, sehingga model cenderung lebih pandai "
            "menebak kelas yang banyak. Coba aktifkan di sidebar.")
     )
+    teks_dibuang = (f"Sebanyak **{n_dibuang:,}** ulasan dibuang karena kosong setelah dibersihkan "
+                    "(misalnya hanya berisi emoji atau simbol)."
+                    if n_dibuang else "Tidak ada ulasan yang dibuang.")
+    kat_vc = df["kategori"].value_counts()
     jelaskan(f"""
-- File Anda berisi **{len(raw):,} ulasan**. {f'Sebanyak **{n_dibuang:,}** ulasan dibuang karena kosong setelah dibersihkan (misalnya hanya berisi emoji atau simbol).' if n_dibuang else 'Tidak ada ulasan yang dibuang.'} Tersisa **{len(df):,}** ulasan yang dipakai.
-- Ulasan terbagi ke **{df['kategori'].nunique()} kategori topik**; yang paling banyak adalah **{df['kategori'].value_counts().index[0]}** ({df['kategori'].value_counts().iloc[0]:,} ulasan).
+- File Anda berisi **{len(raw):,} ulasan**. {teks_dibuang} Tersisa **{len(df):,}** ulasan yang dipakai.
+- Ulasan terbagi ke **{df["kategori"].nunique()} kategori topik**; yang paling banyak adalah **{kat_vc.index[0]}** ({kat_vc.iloc[0]:,} ulasan).
 - Sentimen terbanyak adalah **{dom}** ({pct(vc.iloc[0] / len(df))}), paling sedikit **{minor}** ({pct(vc.iloc[-1] / len(df))}). {kalimat_seimbang}
 - Data dibagi dua: **{len(train_df):,} ulasan untuk melatih** model (seperti bahan belajar) dan **{len(test_df):,} ulasan untuk menguji** (seperti soal ujian yang belum pernah dilihat).
 - Model mengenali **{n_fitur:,} "fitur"**, yaitu kata atau pasangan kata yang dijadikan petunjuk untuk menebak sentimen.
@@ -453,10 +583,11 @@ with tabs[3]:
                           "Testing": hitung(y_test, m["pred_test"])})
     rep = classification_report(y_test, m["pred_test"], labels=labels_aktif,
                                 output_dict=True, zero_division=0)
+    cm_tr = confusion_matrix(y_train, m["pred_train"], labels=labels_aktif)
     cm_te = confusion_matrix(y_test, m["pred_test"], labels=labels_aktif)
 
-    acc_te = hasil.loc["Akurasi", "Testing"]
-    acc_tr = hasil.loc["Akurasi", "Training"]
+    tr, te = hasil["Training"], hasil["Testing"]
+    acc_te, acc_tr = te["Akurasi"], tr["Akurasi"]
     gap = acc_tr - acc_te
     f1_kelas = {k: rep[k]["f1-score"] for k in labels_aktif}
     terbaik = max(f1_kelas, key=f1_kelas.get)
@@ -490,6 +621,7 @@ with tabs[3]:
 - Kelas yang **paling mudah** ditebak: **{terbaik}** (F1 {pct(f1_kelas[terbaik])}). Yang **paling sulit**: **{terburuk}** (F1 {pct(f1_kelas[terburuk])}).
 - {kalimat_salah}
 - ℹ️ Label "benar" di sini berasal dari **pelabelan leksikon** (kamus kata), bukan penilaian manusia. Jadi angka ini mengukur seberapa baik model meniru aturan kamus tersebut.
+- ℹ️ Semua angka di tab ini mengukur **model Naive Bayes murni**. Koreksi kata kunci di tab Prediksi tidak ikut dihitung.
 """)
 
     jelaskan("""
@@ -501,47 +633,144 @@ with tabs[3]:
 - **Confusion matrix**: tabel tebakan vs kenyataan. Angka di **diagonal** (kiri-atas ke kanan-bawah) adalah tebakan yang benar; angka di luar diagonal adalah kesalahan.
 """, "📚 Kamus istilah", expanded=False)
 
+    # ---------------- Metrik (kartu)
     st.subheader("Metrik (macro average)")
     mc = st.columns(4)
-    for c, (nama, val) in zip(mc, hasil["Testing"].items()):
+    for c, (nama, val) in zip(mc, te.items()):
         c.metric(f"{nama} (testing)", f"{val:.2%}",
-                 delta=f"{val - hasil.loc[nama, 'Training']:+.2%} vs training")
+                 delta=f"{val - tr[nama]:+.2%} vs training")
 
-    col_a, col_b = st.columns([1, 1])
-    with col_a:
-        st.dataframe(hasil.round(4), use_container_width=True)
-        fig, ax = plt.subplots(figsize=(6, 4))
-        hasil.plot(kind="bar", ax=ax, color=["#3182bd", "#fd8d3c"], width=0.7)
-        for c in ax.containers:
-            ax.bar_label(c, labels=[f"{v:.1%}" for v in c.datavalues], fontsize=8, padding=2)
-        ax.set_ylim(0, 1.15); plt.xticks(rotation=0); plt.tight_layout()
-        st.pyplot(fig)
-    with col_b:
-        st.markdown("**Classification report (testing)**")
-        st.dataframe(pd.DataFrame(rep).T.round(4), use_container_width=True)
+    prec, rec = te["Precision"], te["Recall"]
+    if prec - rec > 0.05:
+        catatan_pr = (f"Precision ({pct(prec)}) lebih tinggi dari recall ({pct(rec)}): model cenderung "
+                      "**hati-hati**. Kalau ia memberi suatu label biasanya benar, tetapi masih ada "
+                      "ulasan yang terlewat.")
+    elif rec - prec > 0.05:
+        catatan_pr = (f"Recall ({pct(rec)}) lebih tinggi dari precision ({pct(prec)}): model cenderung "
+                      "**mudah memberi label**. Hampir semua ulasan terjaring, tetapi ada tebakan yang meleset.")
+    else:
+        catatan_pr = (f"Precision ({pct(prec)}) dan recall ({pct(rec)}) berdekatan: model "
+                      "**seimbang** antara ketepatan dan kelengkapan.")
+    rata_delta = float((te - tr).mean())
+    arah = ("lebih rendah dari" if rata_delta < -0.005 else
+            "lebih tinggi dari" if rata_delta > 0.005 else "hampir sama dengan")
+    jelaskan(f"""
+Empat kartu di atas adalah **nilai rapor model pada data ujian ({len(test_df):,} ulasan)**.
 
+- **Akurasi {pct(te['Akurasi'])}**: sekitar {round(te['Akurasi'] * 100)} dari 100 ulasan ditebak benar → **{tingkat(te['Akurasi'])}**.
+- **Precision {pct(prec)}**: rata-rata, saat model menyebut sebuah sentimen, tebakannya benar {round(prec * 100)} dari 100 kali.
+- **Recall {pct(rec)}**: rata-rata, dari 100 ulasan yang sungguh punya suatu sentimen, model berhasil menemukan {round(rec * 100)}.
+- **F1-score {pct(te['F1-score'])}**: nilai gabungan precision dan recall → **{tingkat(te['F1-score'])}**.
+- {catatan_pr}
+- Angka kecil berwarna di bawah tiap kartu = selisih nilai testing dibanding training. Rata-rata nilai testing **{arah}** training ({rata_delta:+.1%}). Tanda minus berarti performa pada soal baru sedikit turun dari saat belajar, dan itu normal selama tidak terlalu besar.
+""", "📖 Cara membaca kartu metrik")
+
+    # ---------------- Tabel metrik
+    st.subheader("Tabel metrik: training vs testing")
+    st.dataframe(hasil.round(4), use_container_width=True)
+    selisih = (tr - te)
+    m_gap = selisih.idxmax()
+    jelaskan(f"""
+- Kolom **Training** = nilai pada **{len(train_df):,} ulasan** yang dipakai belajar. Kolom **Testing** = nilai pada **{len(test_df):,} ulasan** ujian.
+- Selisih terbesar ada pada metrik **{m_gap}**: training {pct(tr[m_gap])} vs testing {pct(te[m_gap])} (beda {abs(selisih[m_gap]) * 100:.1f} poin).
+- Metrik testing tertinggi: **{te.idxmax()}** ({pct(te.max())}); terendah: **{te.idxmin()}** ({pct(te.min())}).
+- {'Selisih yang kecil menandakan model **konsisten**: ia tidak hanya hafal data latih.' if gap <= 0.10 else 'Selisih yang besar menandakan model **terlalu hafal** data latih dan kurang luwes pada ulasan baru.'}
+- Angka ditampilkan dalam desimal (0.85 = 85%).
+""", "📖 Cara membaca tabel metrik")
+
+    # ---------------- Grafik metrik
+    st.subheader("Grafik metrik")
+    fig, ax = plt.subplots(figsize=(8, 4))
+    hasil.plot(kind="bar", ax=ax, color=["#3182bd", "#fd8d3c"], width=0.7)
+    for c in ax.containers:
+        ax.bar_label(c, labels=[f"{v:.1%}" for v in c.datavalues], fontsize=8, padding=2)
+    ax.set_ylim(0, 1.15); plt.xticks(rotation=0); plt.tight_layout()
+    st.pyplot(fig)
+    rata_gap_bar = float(selisih.mean())
+    if rata_gap_bar > 0.10:
+        bentuk = "Batang **oranye jauh lebih pendek** dari biru, tanda model kurang bisa mengeneralisasi."
+    elif rata_gap_bar > 0.03:
+        bentuk = "Batang oranye **sedikit lebih pendek** dari biru, wajar untuk model yang diuji pada data baru."
+    else:
+        bentuk = "Batang biru dan oranye **hampir sama tinggi**, tanda performa stabil."
+    jelaskan(f"""
+- **Batang biru** = nilai training, **batang oranye** = nilai testing. Makin tinggi batang, makin baik; batas atas grafik adalah 100%.
+- {bentuk}
+- Pada data testing, metrik **{te.idxmax()}** paling tinggi ({pct(te.max())}) dan **{te.idxmin()}** paling rendah ({pct(te.min())}).
+- Fokus utama ke batang **oranye**, karena itu gambaran kinerja model pada ulasan yang belum pernah dilihat.
+""", "📖 Cara membaca grafik")
+
+    # ---------------- Classification report
+    st.subheader("Classification report (testing)")
+    st.dataframe(pd.DataFrame(rep).T.round(4), use_container_width=True)
+    baris_kelas = ""
+    for k in labels_aktif:
+        r = rep[k]
+        baris_kelas += (f"- **{k}** ({int(r['support']):,} ulasan uji): precision {pct(r['precision'])}, "
+                        f"recall {pct(r['recall'])}, F1 {pct(r['f1-score'])}.\n")
+    f1_macro = rep["macro avg"]["f1-score"]
+    f1_w = rep["weighted avg"]["f1-score"]
+    cat_w = ("F1 *weighted* lebih tinggi dari *macro*, artinya kelas yang jumlahnya besar dikenali lebih baik "
+             "daripada kelas yang kecil." if f1_w - f1_macro > 0.03 else
+             "F1 *weighted* dan *macro* berdekatan, artinya kualitas relatif merata di semua kelas.")
+    jelaskan(f"""
+Tabel ini merinci nilai **per kelas** (bukan rata-rata):
+
+{baris_kelas}
+- **support** = jumlah ulasan uji di kelas itu. **macro avg** = rata-rata biasa antar kelas ({pct(f1_macro)}), **weighted avg** = rata-rata dengan memperhitungkan jumlah ulasan ({pct(f1_w)}). {cat_w}
+""", "📖 Cara membaca classification report")
+
+    # ---------------- Confusion matrix (vertikal)
     st.subheader("Confusion matrix")
-    cm_tr = confusion_matrix(y_train, m["pred_train"], labels=labels_aktif)
-    cm_te_n = cm_te / np.maximum(cm_te.sum(axis=1, keepdims=True), 1)
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4.5))
-    for ax, cm, judul, fmt in [(axes[0], cm_tr, "Training", "d"),
-                               (axes[1], cm_te, "Testing", "d"),
-                               (axes[2], cm_te_n, "Testing (per baris)", ".1%")]:
+    contoh_c = (f"Contoh membaca: baris **{labels_aktif[0]}** × kolom **{labels_aktif[-1]}** = "
+                f"**{int(cm_te[0, -1]):,}**, artinya {int(cm_te[0, -1]):,} ulasan yang sebenarnya "
+                f"**{labels_aktif[0]}** ditebak model sebagai **{labels_aktif[-1]}**.")
+    jelaskan(f"""
+Confusion matrix adalah tabel **"tebakan vs kenyataan"**. **Baris = sentimen sebenarnya**, **kolom = tebakan model**.
+Kotak di diagonal (kiri-atas ke kanan-bawah) adalah tebakan yang benar; kotak lain adalah kesalahan. Warna makin gelap = angka makin besar.
+
+{contoh_c}
+""", "📖 Cara membaca confusion matrix")
+
+    def gambar_cm(cm, judul, fmt):
+        fig, ax = plt.subplots(figsize=(6.5, 4.5))
         sns.heatmap(cm, annot=True, fmt=fmt, cmap="Blues", cbar=False, ax=ax,
                     xticklabels=labels_aktif, yticklabels=labels_aktif)
         ax.set_title(judul, fontweight="bold")
         ax.set_xlabel("Prediksi"); ax.set_ylabel("Aktual")
-    plt.tight_layout()
-    st.pyplot(fig)
+        plt.tight_layout()
+        return fig
 
+    st.markdown("##### 1) Data training")
+    st.pyplot(gambar_cm(cm_tr, "Training", "d"))
+    jelaskan(narasi_cm_jumlah(cm_tr, labels_aktif, "training") +
+             f"- Sebagai pembanding, akurasi training **{pct(acc_tr)}** vs testing **{pct(acc_te)}**.",
+             "📖 Penjelasan confusion matrix training")
+
+    st.markdown("##### 2) Data testing")
+    st.pyplot(gambar_cm(cm_te, "Testing", "d"))
+    jelaskan(narasi_cm_jumlah(cm_te, labels_aktif, "testing") +
+             "- Inilah gambaran paling jujur, karena data testing belum pernah dilihat model saat belajar.",
+             "📖 Penjelasan confusion matrix testing")
+
+    st.markdown("##### 3) Data testing (persentase per baris)")
+    cm_te_n = cm_te / np.maximum(cm_te.sum(axis=1, keepdims=True), 1)
+    st.pyplot(gambar_cm(cm_te_n, "Testing (per baris)", ".1%"))
+    jelaskan(narasi_cm_persen(cm_te, labels_aktif),
+             "📖 Penjelasan confusion matrix persentase")
+
+    # ---------------- Kata berpengaruh
     st.subheader("Kata paling berpengaruh per kelas (Naive Bayes)")
     fitur = np.array(tfidf.get_feature_names_out())
     top_fitur = {k: fitur[np.argsort(nb.feature_log_prob_[i])[::-1][:12]]
                  for i, k in enumerate(nb.classes_)}
-    jelaskan("Tabel ini menunjukkan **12 kata/frasa yang paling kuat mengarahkan model** ke tiap sentimen. "
-             "Kata yang muncul di semua kolom (mis. 'game') hanya kata umum; yang khas di satu kolom "
-             "adalah petunjuk utama sentimen itu.", "📖 Cara membaca tabel kata berpengaruh",
-             expanded=False)
+    umum = set.intersection(*[set(v) for v in top_fitur.values()]) if top_fitur else set()
+    ket_umum = (f"Kata yang muncul di **semua** kolom ({fmt_kata(sorted(umum)[:5])}) adalah kata umum "
+                "yang kurang membedakan sentimen." if umum else
+                "Tidak ada kata yang muncul di semua kolom, tanda tiap sentimen punya ciri kata yang jelas.")
+    jelaskan(f"Tabel ini menunjukkan **12 kata/frasa yang paling kuat mengarahkan model** ke tiap sentimen. "
+             f"{ket_umum} Kata yang khas di satu kolom adalah petunjuk utama sentimen itu.",
+             "📖 Cara membaca tabel kata berpengaruh", expanded=False)
     st.dataframe(pd.DataFrame(top_fitur).rename_axis("Peringkat").rename(index=lambda i: i + 1),
                  use_container_width=True)
 
@@ -555,6 +784,12 @@ Di sini Anda bisa **mencoba model secara langsung**. Tulis satu ulasan (Bahasa I
 - Untuk banyak ulasan sekaligus, pakai bagian **Prediksi massal**: upload CSV berkolom `content`, lalu unduh hasilnya.
 """)
 
+    st.checkbox("Aktifkan koreksi kata kunci (disarankan)", key="pakai_koreksi",
+                help="Naive Bayes menghitung kata satu per satu dan tidak paham kata kontras seperti "
+                     "'tapi'. Koreksi ini menambahkan pengecekan kata bernada positif/negatif, "
+                     "negasi ('tidak bagus'), dan kata kontras, lalu menggabungkannya dengan tebakan model.")
+    pakai_koreksi = st.session_state["pakai_koreksi"]
+
     st.subheader("Coba prediksi ulasan baru")
     teks = st.text_area("Tulis ulasan:", "game nya seru banget tapi sering lag dan harga robux mahal",
                         height=100)
@@ -563,11 +798,14 @@ Di sini Anda bisa **mencoba model secara langsung**. Tulis satu ulasan (Bahasa I
         if not bersih:
             st.warning("Teks kosong setelah preprocessing. Coba kalimat lain.")
         else:
-            vec = tfidf.transform([bersih])
-            proba = nb.predict_proba(vec)[0]
+            proba, p_nb, kp, kn, dikoreksi = prediksi_teks(bersih, tfidf, nb, pakai_koreksi)
             pred = nb.classes_[proba.argmax()]
+            pred_nb = nb.classes_[p_nb.argmax()]
             warna = {"positif": "success", "negatif": "error", "netral": "warning"}[pred]
             getattr(st, warna)(f"Prediksi: **{pred.upper()}** ({proba.max():.1%})")
+            if dikoreksi and pred_nb != pred:
+                st.caption(f"Tanpa koreksi kata kunci, model murni menebak **{pred_nb}** "
+                           f"({p_nb.max():.1%}).")
             st.write("Teks setelah preprocessing:", f"`{bersih}`")
             pdf = pd.DataFrame({"Kelas": nb.classes_, "Probabilitas": proba})
             fig, ax = plt.subplots(figsize=(6, 2.5))
@@ -592,12 +830,32 @@ Di sini Anda bisa **mencoba model secara langsung**. Tulis satu ulasan (Bahasa I
             token = bersih.split()
             kenal = [t for t in token if t in tfidf.vocabulary_]
             asing = [t for t in token if t not in tfidf.vocabulary_]
-            teks_hasil = (f"- Model menebak **{pred}** dan {tingkat_yakin} ({pct(yakin)}).\n")
+            teks_hasil = f"- Model menebak **{pred}** dan {tingkat_yakin} ({pct(yakin)}).\n"
             if kedua is not None:
-                teks_hasil += (f"- Alternatif terdekat: **{kedua}** ({pct(proba[urut[1]])}).\n")
+                teks_hasil += f"- Alternatif terdekat: **{kedua}** ({pct(proba[urut[1]])}).\n"
+            if kp or kn:
+                teks_hasil += (f"- Kata bernada **negatif** yang terdeteksi: {fmt_kata(kn)}. "
+                               f"Kata bernada **positif**: {fmt_kata(kp)}.\n")
+                if any(w in KONTRAS for w in token):
+                    teks_hasil += ("- Ada kata kontras (mis. *tapi*). Kata setelahnya diberi bobot lebih besar "
+                                   "karena biasanya itulah inti penilaian.\n")
+            if dikoreksi:
+                if pred_nb != pred:
+                    teks_hasil += (f"- Koreksi kata kunci **mengubah** hasil dari **{pred_nb}** menjadi **{pred}**, "
+                                   "karena jumlah kata bernada negatif/positif tidak sejalan dengan tebakan "
+                                   "model murni. Naive Bayes menghitung kata satu per satu sehingga "
+                                   "kata umum seperti *game* atau *seru* bisa mengalahkan keluhan.\n")
+                else:
+                    teks_hasil += "- Koreksi kata kunci **sejalan** dengan tebakan model murni.\n"
+            elif pakai_koreksi:
+                teks_hasil += ("- Tidak ada kata kunci positif/negatif yang dikenali, jadi hasil murni "
+                               "dari model Naive Bayes.\n")
+            else:
+                teks_hasil += "- Koreksi kata kunci **dimatikan**: hasil murni dari model Naive Bayes.\n"
             teks_hasil += (f"- Dari **{len(token)} kata** setelah dibersihkan, **{len(kenal)}** dikenali model"
                            + (f" dan **{len(asing)}** tidak dikenali ({fmt_kata(asing[:6])}), "
-                              "jadi tidak ikut memengaruhi tebakan." if asing else ". Semua kata dikenali."))
+                              "jadi tidak ikut memengaruhi tebakan model." if asing
+                              else ". Semua kata dikenali."))
             jelaskan(teks_hasil, "📖 Mengapa hasilnya begini?")
 
     st.markdown("---")
@@ -609,13 +867,21 @@ Di sini Anda bisa **mencoba model secara langsung**. Tulis satu ulasan (Bahasa I
             st.error("Kolom `content` tidak ditemukan.")
         else:
             bdf["text_clean"] = bdf["content"].apply(preprocess)
-            bdf["prediksi"] = nb.predict(tfidf.transform(bdf["text_clean"]))
+            preds = []
+            for t in bdf["text_clean"]:
+                if t.strip():
+                    p, _, _, _, _ = prediksi_teks(t, tfidf, nb, pakai_koreksi)
+                    preds.append(nb.classes_[p.argmax()])
+                else:
+                    preds.append(None)
+            bdf["prediksi"] = preds
             vb = bdf["prediksi"].value_counts()
             ringkas = ", ".join(f"**{k}** {v:,} ({pct(v / len(bdf))})" for k, v in vb.items())
             kosong = int((bdf["text_clean"].str.strip() == "").sum())
             jelaskan(f"File Anda berisi **{len(bdf):,} ulasan**. Hasil prediksi: {ringkas}."
-                     + (f" Ada **{kosong:,}** ulasan yang kosong setelah dibersihkan, tebakannya kurang "
-                        "bisa dipercaya." if kosong else "")
+                     + (f" Ada **{kosong:,}** ulasan yang kosong setelah dibersihkan sehingga tidak "
+                        "diprediksi." if kosong else "")
+                     + f" Koreksi kata kunci saat ini **{'aktif' if pakai_koreksi else 'mati'}**."
                      + " Tombol di bawah tabel mengunduh hasil lengkap dalam format CSV.",
                      "📖 Ringkasan hasil prediksi massal")
             st.dataframe(bdf, use_container_width=True)
