@@ -55,6 +55,17 @@ POS_CUES = {"seru", "bagus", "keren", "mantap", "mantul", "asik", "asyik", "suka
             "cinta", "top", "recommended", "worth", "puas", "hibur"}
 KONTRAS = {"tapi", "tetapi", "namun", "cuma", "hanya", "sayang", "sayangnya", "sayangny"}
 
+# Umpatan / makian: selalu dianggap negatif dengan bobot kuat.
+UMPATAN = {"anjing", "anjir", "anjrit", "anjg", "anj", "asu", "babi", "celeng",
+           "kontol", "memek", "tolol", "goblok", "bego", "bodoh", "idiot",
+           "bangsat", "bajingan", "brengsek", "kampret", "sialan", "tai",
+           "tae", "ngentot", "jancok", "jancuk", "dancok", "monyet", "kunyuk",
+           "setan", "sampah"}
+BOBOT_UMPATAN = 2.0
+
+# Lindungi dari stemmer agar bentuknya tidak berubah
+PROTECT_STEM |= UMPATAN
+
 
 @st.cache_resource
 def get_stemmer():
@@ -195,7 +206,8 @@ def kata_dominan(df, sentimen, top=7):
 # ======================================================================
 def skor_kata_kunci(tokens):
     """Hitung skor kata bernada positif/negatif. Memperhitungkan negasi
-    ('tidak bagus' -> negatif) dan kata kontras ('tapi' -> kata sesudahnya lebih penting)."""
+    ('tidak bagus' -> negatif), kata kontras ('tapi' -> kata sesudahnya lebih penting),
+    dan umpatan (selalu negatif, bobot kuat, tidak dibalik oleh negasi)."""
     pos = neg = 0.0
     kp, kn = [], []
     kontras = False
@@ -203,6 +215,13 @@ def skor_kata_kunci(tokens):
         if w in KONTRAS:
             kontras = True
             continue
+
+        # Umpatan: selalu negatif, tidak dibalik negasi
+        if w in UMPATAN:
+            neg += BOBOT_UMPATAN * (1.5 if kontras else 1.0)
+            kn.append(w)
+            continue
+
         if w in NEG_CUES:
             pol = -1
         elif w in POS_CUES:
@@ -219,7 +238,6 @@ def skor_kata_kunci(tokens):
             neg += bobot
             kn.append(w)
     return pos, neg, kp, kn
-
 
 def prediksi_teks(bersih, tfidf, nb, pakai_koreksi=True):
     """Kembalikan (proba_akhir, proba_nb_murni, kata_pos, kata_neg, dikoreksi)."""
